@@ -8,6 +8,7 @@
 , dbus
 , gdk-pixbuf
 , glib
+, glib-networking
 , gtk3
 , harfbuzz
 , libx11
@@ -27,7 +28,7 @@ let
 
     src = fetchurl {
       url = "https://lookup.x-plane.com/_lookup_12_/download/X-Plane12InstallerLinux.zip";
-      hash = "sha256-FBqp1vTibF3q2zo2gQkVeDBTQ6DgSkxozKz+3ijDfoE=";
+      hash = "sha256-8dKnm5cHxKp0E1ImVADIfVYv3VGr96hv1uSF4VCk/+8=";
     };
 
     nativeBuildInputs = [ unzip ];
@@ -58,6 +59,9 @@ buildFHSEnv {
     dbus
     gdk-pixbuf
     glib
+    # Provides GIO's TLS backend (libgiognutls.so). Without it WebKit/libsoup
+    # fails the login flow with "TLS support is not available".
+    glib-networking
     gtk3
     harfbuzz
     libx11
@@ -69,6 +73,12 @@ buildFHSEnv {
     vulkan-loader
     webkitgtk_4_1
   ];
+
+  # GIO's module directory is compiled into libgio as a /nix/store path, so it
+  # never sees the FHS tree. Point it at the merged one explicitly.
+  profile = ''
+    export GIO_EXTRA_MODULES=/usr/lib/gio/modules
+  '';
 
   runScript = "${unwrapped}/bin/x-plane12-installer";
 

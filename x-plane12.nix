@@ -9,6 +9,7 @@
 , expat
 , gdk-pixbuf
 , glib
+, glib-networking
 , gtk3
 , harfbuzz
 , libdrm
@@ -24,10 +25,12 @@
 , libxrandr
 , curl
 , libGL
+, libGLU
 , libgbm
 , nss
 , zlib
 , nspr
+, openal
 , pango
 , vulkan-loader
 , webkitgtk_4_1
@@ -60,6 +63,8 @@ buildFHSEnv {
     expat
     gdk-pixbuf
     glib
+    # GIO's TLS backend (libgiognutls.so); see the profile below.
+    glib-networking
     gtk3
     harfbuzz
     libdrm
@@ -74,15 +79,26 @@ buildFHSEnv {
     libxkbcommon
     libxrandr
     libGL
+    # Addon-only: ToLiss MangoStudios and Rotate MD-11F plugins link it.
+    libGLU
     libgbm
     curl
     nss
     nspr
+    # Addon-only: ToLiss MangoStudios plugin links libopenal.so.1.
+    openal
     zlib
     pango
     vulkan-loader
     webkitgtk_4_1
   ];
+
+  # GIO's module directory is compiled into libgio as a /nix/store path, so it
+  # never sees the FHS tree. Without this the GnuTLS module is not loaded and
+  # WebKit reports "TLS support is not available".
+  profile = ''
+    export GIO_EXTRA_MODULES=/usr/lib/gio/modules
+  '';
 
   inherit runScript;
 

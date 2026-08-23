@@ -64,7 +64,41 @@ The installed game binary (`X-Plane-x86_64`) has hardcoded references to bundled
 
 `buildFHSEnv`'s `targetPkgs` does **not** automatically include transitive dependencies — every package whose `.so` files the binary needs at startup must be listed explicitly. The full list was derived by running `patchelf --print-needed` on `X-Plane-x86_64` and all `.so` files in `Resources/dlls/64/` and `Resources/dlls/64/cef/lin/`, filtering out the bundled libs, then mapping to nixpkgs package names.
 
+
+That derivation covered the **base game only**. Third-party aircraft ship their own plugins under `Aircraft/*/plugins/*/lin_x64/` (and `.../64/lin.xpl`) with dependencies of their own — see below. To rescan an install for libraries the FHS environment does not yet provide:
+
+```
+cd ~/X-Plane\ 12
+{ find . -path '*lin_x64/*' -name '*.xpl'; find . -path '*/64/lin.xpl'; } \
+  | while read -r f; do readelf -d "$f" | grep NEEDED; done | sort -u
+```
 Use `nix-shell -p nix-index --run "nix-locate <libname>"` to find the correct nixpkgs attribute for any missing library.
+
+### TLS support (`glib-networking`)
+
+Both packages need `glib-networking` in `targetPkgs` **and** `GIO_EXTRA_MODULES=/usr/lib/gio/modules` set in the `profile`. Without both, WebKit/libsoup fails with **"TLS support is not available"** and the X-Plane Identity login cannot proceed — in the installer this blocks the download of the simulator entirely.
+
+GIO discovers its TLS backend by loading a module (`libgiognutls.so`) from a directory that is compiled into `libgio` at build time as a `/nix/store/...-glib-2.x/lib/gio/modules` path. That store path is visible inside the FHS environment but contains no modules, and the merged FHS copy at `/usr/lib/gio/modules` is never searched. Adding the package alone is therefore not enough: `g_tls_backend_get_default()` still returns `GDummyTlsBackend` and `supports_tls()` is false. The `GIO_EXTRA_MODULES` export is what makes the loader pick up `GTlsBackendGnutls`.
+
+Note this is separate from the installer's own HTTPS downloads, which work regardless — curl and OpenSSL are statically linked into the installer binary, so only the WebKit-based login path is affected.
+
+### Addon plugin libraries (`openal`, `libGLU`)
+
+Third-party aircraft plugins need entries in `targetPkgs` too. Two are known:
+
+- `openal` (openal-soft, `libopenal.so.1`) — the ToLiss `MangoStudios` plugin
+- `libGLU` (glu, `libGLU.so.1`) — the same ToLiss plugin, and Rotate MD-11F's `MD-11-core` plugin
+
+**The `Log.txt` error is misleading.** X-Plane prints the `dlerror:` line *after* the `Loaded:` line of the previous plugin, so it names the wrong file:
+
+```
+Loaded: .../ToLissA339_V1p2p1/plugins/AirbusFBW_XP11/lin_x64/AirbusFBW_XP11.xpl (XP11.ToLiss.Airbus.systems).
+dlerror:libopenal.so.1: cannot open shared object file: No such file or directory
+```
+
+`AirbusFBW_XP11.xpl` has exactly one `DT_NEEDED` (`libc.so.6`) and no reference to OpenAL. The failure belongs to the *next* plugin in load order — `MangoStudios/64/lin.xpl`. When chasing one of these, check the plugin loaded after the one named.
+
+No `profile` export is needed for either library. `openal-soft` resolves its own backends (ALSA, PulseAudio, PipeWire, D-Bus) through its `RUNPATH`, which stays valid because `/nix/store` is bind-mounted inside the FHS environment.
 
 ### Known issues / non-fatal warnings
 
@@ -78,3 +112,4 @@ Use `nix-shell -p nix-index --run "nix-locate <libname>"` to find the correct ni
 | Version | Date | Notes |
 |---------|------|-------|
 | 12.3.0 | Nov 2025 installer / Dec 2025 game | Initial packaging |
+| 12.3.0 | Aug 2026 | Added `openal` and `libGLU` for third-party aircraft plugins |
