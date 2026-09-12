@@ -82,6 +82,37 @@ GIO discovers its TLS backend by loading a module (`libgiognutls.so`) from a dir
 
 Note this is separate from the installer's own HTTPS downloads, which work regardless — curl and OpenSSL are statically linked into the installer binary, so only the WebKit-based login path is affected.
 
+### Plugin HTTPS / CA certificates (`SSL_CERT_FILE`)
+
+The ToLiss `AirbusFBW_XP11` plugin **statically links its own curl + OpenSSL** to
+fetch the SimBrief flight plan (`https://www.simbrief.com/api/xml.fetcher.php`)
+and to drive Hoppie CPDLC (`https://www.hoppie.nl/acars/system/connect.html`).
+That OpenSSL was built with `OPENSSLDIR: "/usr/lib/ssl"`, so its default trust
+store is `/usr/lib/ssl/cert.pem` + `/usr/lib/ssl/certs` — paths that **do not
+exist** in the FHS tree (`buildFHSEnv` binds the host `/etc/ssl/certs`, not
+`/usr/lib/ssl`). With no CA bundle, TLS peer verification fails and every request
+returns 0 bytes. The symptom in `Log.txt` is:
+
+```
+ToLiss aircraft systems plugin: Launching http request to URL: https://www.simbrief.com/api/xml.fetcher.php?userid=NNNNNN
+ToLiss aircraft systems plugin: Copied 0 bytes of data in response to Simbrief request.
+```
+
+(and the equivalent `Copied 0 bytes ... CPDLC request` for Hoppie). This is
+separate from the base game's own HTTP subsystem, which finds the host bundle on
+its own — `Log.txt` logs `I/HTTP: Using built-in certificate path:
+/etc/ssl/certs/ca-certificates.crt` — so the sim's built-in downloads work while
+the plugin's do not.
+
+The plugin's OpenSSL honours the `SSL_CERT_FILE` environment variable for its
+default trust store, so the launcher exports it (plus `CURL_CA_BUNDLE` for any
+addon libcurl that reads it) in the `profile`, pointing at the nixpkgs `cacert`
+bundle. That is a `/nix/store` path, visible inside the FHS env because the store
+is bind-mounted, so the fix is self-contained and does not depend on host cert
+configuration. This is why `cacert` is a function argument even though it is not
+in `targetPkgs` (`/etc/ssl` is bound from the host, so a `targetPkgs` entry would
+be shadowed anyway — the store-path export is what works).
+
 ### Addon plugin libraries (`openal`, `libGLU`)
 
 Third-party aircraft plugins need entries in `targetPkgs` too. Two are known:
@@ -100,6 +131,26 @@ dlerror:libopenal.so.1: cannot open shared object file: No such file or director
 
 No `profile` export is needed for either library. `openal-soft` resolves its own backends (ALSA, PulseAudio, PipeWire, D-Bus) through its `RUNPATH`, which stays valid because `/nix/store` is bind-mounted inside the FHS environment.
 
+### Plugin clipboard (`xclip`, `wl-clipboard`)
+
+The ToLiss `AirbusFBW_XP11` and `MangoStudios` plugins shell out to `xclip` to
+read and write the X11 selection — used to paste the SimBrief pilot ID and
+Hoppie logon code into the MCDU:
+
+- `AirbusFBW_XP11`: `xclip -o` (reads the **PRIMARY** selection)
+- `MangoStudios`: `xclip -selection clipboard` (write) and `-o` (read the **CLIPBOARD** selection)
+
+Real `xclip` is X11-only. On a Wayland session X-Plane runs under XWayland, so
+`xclip` can only reach the XWayland server; the compositor↔XWayland clipboard
+bridge is unreliable and generally does not export PRIMARY, so the paste comes
+back empty. The launcher therefore ships a tiny `xclip` shim
+(`writeShellScriptBin "xclip"`) that maps those exact invocations onto
+`wl-clipboard` (`wl-copy`/`wl-paste`), which talks to the Wayland compositor
+directly. `runScript` prepends the shim to `PATH` **only when `WAYLAND_DISPLAY`
+is set**, so X11 sessions keep using the real `xclip` from `targetPkgs`
+unchanged. The Wayland socket (`$XDG_RUNTIME_DIR/wayland-1`) is reachable
+because `buildFHSEnv` auto-binds `/run` into the sandbox.
+
 ### Known issues / non-fatal warnings
 
 - `xdg-user-dir: command not found` — from the GTK wrapper script; harmless
@@ -113,3 +164,5 @@ No `profile` export is needed for either library. `openal-soft` resolves its own
 |---------|------|-------|
 | 12.3.0 | Nov 2025 installer / Dec 2025 game | Initial packaging |
 | 12.3.0 | Aug 2026 | Added `openal` and `libGLU` for third-party aircraft plugins |
+| 12.3.0 | Sep 2026 | Added `wl-clipboard` + Wayland `xclip` shim so ToLiss SimBrief/Hoppie clipboard paste works on Wayland |
+| 12.3.0 | Sep 2026 | Added `cacert` + `SSL_CERT_FILE`/`CURL_CA_BUNDLE` exports so ToLiss SimBrief/Hoppie CPDLC HTTPS requests verify TLS and complete |
