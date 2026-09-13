@@ -25,12 +25,16 @@
 , libxinerama
 , libxkbcommon
 , libxrandr
+, libxshmfence
+, libxxf86vm
 , curl
 , libGL
 , libGLU
 , libgbm
+, lm_sensors
 , nss
 , zlib
+, zstd
 , nspr
 , openal
 , pango
@@ -38,6 +42,8 @@
 , webkitgtk_4_1
 , wl-clipboard
 , xclip
+, openssl
+, runCommand
 }:
 
 let
@@ -94,6 +100,31 @@ let
     fi
     exec "$dir/X-Plane-x86_64" "$@"
   '';
+
+  # ToLiss's AirbusFBW plugin statically links a Debian-built curl whose
+  # compiled-in CApath (/etc/ssl/certs) is passed explicitly to OpenSSL via
+  # SSL_CTX_load_verify_locations(). That is a *hashed-directory* trust store: it
+  # only reads per-CA subject-hash symlinks (<hash>.0). Debian ships those; NixOS
+  # /etc/ssl/certs holds just the ca-certificates.crt bundle and no hash links,
+  # so the plugin's trust store is effectively empty -> "Unknown CA" TLS alert ->
+  # the SimBrief/Hoppie downloads return 0 bytes ("Copied 0 bytes ..." in
+  # Log.txt). Because the CApath is set explicitly, SSL_CERT_FILE/SSL_CERT_DIR
+  # and the OPENSSLDIR defaults are all bypassed -- only real hash entries in
+  # /etc/ssl/certs fix it. Build a dir with both the hash symlinks (for the
+  # plugin) and the flat bundle (for CAfile consumers such as the base game's own
+  # HTTP stack), then bind it over /etc/ssl/certs in the sandbox (extraBwrapArgs).
+  sslCerts = runCommand "x-plane12-ssl-certs" { nativeBuildInputs = [ openssl ]; } ''
+    mkdir -p $out
+    cd $out
+    # One certificate per file (drop the NSS label lines the bundle interleaves),
+    # then generate the OpenSSL subject-hash symlinks a hashed CApath lookup needs.
+    awk '/-----BEGIN CERTIFICATE-----/{n++; f=sprintf("cert-%04d.pem", n); inb=1} inb{print > f} /-----END CERTIFICATE-----/{inb=0; close(f)}' ${cacert}/etc/ssl/certs/ca-bundle.crt
+    openssl rehash $out
+    # Keep the flat bundle too (CAfile consumers, e.g. the base game reads
+    # /etc/ssl/certs/ca-certificates.crt).
+    cp ${cacert}/etc/ssl/certs/ca-bundle.crt $out/ca-certificates.crt
+    ln -s ca-certificates.crt $out/ca-bundle.crt
+  '';
 in
 buildFHSEnv {
   name = "x-plane12";
@@ -132,6 +163,24 @@ buildFHSEnv {
     # Addon-only: ToLiss MangoStudios plugin links libopenal.so.1.
     openal
     zlib
+    # Mesa's DRI/Gallium driver (libgallium_dri.so from /run/opengl-driver/lib)
+    # dlopens these; without them GL context creation fails with "Failed to load
+    # libgallium_dri.so ... <lib>: cannot open shared object file" and X-Plane
+    # crashes at startup (the only visible symptom is SDL's benign "Couldn't load
+    # font" message box fallback).
+    zstd            # libzstd.so.1
+    libxshmfence    # libxshmfence.so.1
+    # X-Plane's own bundled Zink stack (Resources/dlls/64/zink/{libgallium_dri.so,
+    # libGL.so}), used with `--zink` to run plugin OpenGL on top of Vulkan, needs
+    # these two. Both bundled libs have no /nix/store RUNPATH, so every DT_NEEDED
+    # must resolve from the FHS tree. Without them the Zink dlopen fails: missing
+    # libsensors.so.5 makes libgallium_dri.so unloadable (silent fallback to
+    # native GL -- "Supports Zink: Yes" but the bridge device reports radeonsi,
+    # not zink); with that fixed, libGL.so then needs libXxf86vm.so.1 or `--zink`
+    # crashes at startup (gfx_ogl_bridge_context_x11.cpp -> "xplm not running").
+    # lm_sensors: .out because it installs only bin+man by default; the .so is in out.
+    lm_sensors.out    # libsensors.so.5
+    libxxf86vm        # libXxf86vm.so.1
     pango
     vulkan-loader
     webkitgtk_4_1
@@ -149,18 +198,17 @@ buildFHSEnv {
   # WebKit reports "TLS support is not available".
   profile = ''
     export GIO_EXTRA_MODULES=/usr/lib/gio/modules
-    # The ToLiss AirbusFBW plugin statically links curl + OpenSSL to fetch the
-    # SimBrief flight plan (https://www.simbrief.com/...) and drive Hoppie CPDLC
-    # (https://www.hoppie.nl/...). Its OpenSSL is built with OPENSSLDIR
-    # "/usr/lib/ssl", whose default cert.pem/certs dir does not exist in the FHS
-    # tree, so TLS peer verification fails and every request returns 0 bytes
-    # ("Copied 0 bytes of data in response to Simbrief request" in Log.txt).
-    # OpenSSL honours SSL_CERT_FILE for its default trust store; point it at the
-    # cacert bundle (a /nix/store path, visible because the store is bind-mounted
-    # inside the FHS env). CURL_CA_BUNDLE covers any addon libcurl that reads it.
-    export SSL_CERT_FILE=${cacert}/etc/ssl/certs/ca-bundle.crt
-    export CURL_CA_BUNDLE=${cacert}/etc/ssl/certs/ca-bundle.crt
   '';
+
+  # Replace the sandbox's /etc/ssl/certs (which buildFHSEnv binds from the host,
+  # and on NixOS holds only the bundle file) with a dir that also carries the
+  # OpenSSL hash symlinks the ToLiss plugin's hashed CApath lookup requires. The
+  # symlink buildFHSEnv sets up for /etc/ssl/certs runs earlier in the bwrap
+  # command; --tmpfs /etc/ssl drops it so the following --ro-bind takes effect.
+  extraBwrapArgs = [
+    "--tmpfs /etc/ssl"
+    "--ro-bind ${sslCerts} /etc/ssl/certs"
+  ];
 
   inherit runScript;
 
