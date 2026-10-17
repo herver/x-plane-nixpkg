@@ -89,9 +89,26 @@ let
       exit 1
     fi
     cd "$dir"
-    export LD_LIBRARY_PATH="$dir/Resources/dlls/64:$dir/Resources/dlls/64/cef/lin:/run/opengl-driver/lib:$LD_LIBRARY_PATH"
+    # Do not append the caller's LD_LIBRARY_PATH: host /nix/store entries are
+    # built against a different glibc than the FHS tree and break dlopen of
+    # libwebkit2gtk (e.g. "GLIBC_2.43 not found" -> Identity login disabled ->
+    # product-key dialog). An empty trailing entry would also add the CWD.
+    export LD_LIBRARY_PATH="$dir/Resources/dlls/64:$dir/Resources/dlls/64/cef/lin:/run/opengl-driver/lib"
+    # CEF's GPU program cache can go stale (seen after a reboot): every Skia
+    # shader then fails to link ("Skia shader compilation error" in debug.log),
+    # CEF draws nothing, and its modal dialogs are invisible but still swallow
+    # all clicks. Chromium regenerates these caches, so drop them on each start.
+    rm -rf "$dir/Output/caches/cef/_local/GPUCache" "$dir/Output/caches/cef/_local/DawnCache"
     # Expose the NixOS driver Vulkan ICD files to the Vulkan loader.
     export XDG_DATA_DIRS="/run/opengl-driver/share:''${XDG_DATA_DIRS:-/usr/share}"
+    # The X-Plane Identity login window is WebKitGTK running inside the game
+    # process, so it inherits the Zink env X-Plane sets for its OpenGL bridge
+    # (MESA_LOADER_DRIVER_OVERRIDE=zink, from Resources/dlls/64/zink/zink_link.json).
+    # With GPU compositing the login window renders solid black; force WebKit's
+    # CPU path. Only the login window uses WebKit, so the cost (slow redraws
+    # at 4K) is limited to signing in.
+    export WEBKIT_DISABLE_COMPOSITING_MODE=1
+    export WEBKIT_SKIA_ENABLE_CPU_RENDERING=1
     # On Wayland, shadow the X11-only xclip the ToLiss plugins call with the
     # wl-clipboard shim so SimBrief/Hoppie clipboard paste works without relying
     # on the flaky XWayland clipboard bridge.
