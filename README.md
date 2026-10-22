@@ -17,10 +17,11 @@ Follow the on-screen instructions. The game installs to `~/X-Plane 12/` by defau
 
 **Run:**
 ```
-NIXPKGS_ALLOW_UNFREE=1 nix-build --no-sandbox -E \
+NIXPKGS_ALLOW_UNFREE=1 nix-build --no-sandbox -I nixpkgs=channel:nixpkgs-unstable -E \
   '(import <nixpkgs> { config.allowUnfree = true; }).callPackage ./x-plane12.nix {}'
 ./result/bin/x-plane12
 ```
+The launcher needs a nixpkgs whose glibc is ≥ 2.43 (asserted at eval time): addons built on newer distros (e.g. Falcon 8X's `libXPSV`) import `GLIBC_2.43` libm symbols, and nixos-26.05 ships glibc 2.42.
 
 Set `XPLANE12_DIR` to override the install location:
 ```

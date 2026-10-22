@@ -12,6 +12,7 @@
 , gdk-pixbuf
 , glib
 , glib-networking
+, glibc
 , gtk3
 , harfbuzz
 , libdrm
@@ -143,6 +144,11 @@ let
     ln -s ca-certificates.crt $out/ca-bundle.crt
   '';
 in
+# Addons built on glibc >= 2.43 (e.g. Falcon 8X libXPSV/lib_video/lib_visible)
+# import libm's new sqrtf/atan2f/acosf/remainder@GLIBC_2.43. The FHS tree's
+# glibc comes from this nixpkgs, so build against nixpkgs-unstable.
+assert lib.assertMsg (lib.versionAtLeast glibc.version "2.43")
+  "x-plane12: nixpkgs glibc ${glibc.version} < 2.43; addon plugins (Falcon 8X libXPSV) need GLIBC_2.43. Build with -I nixpkgs=channel:nixpkgs-unstable";
 buildFHSEnv {
   name = "x-plane12";
 
